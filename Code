@@ -1,0 +1,117 @@
+import cv2
+import numpy as np
+import matplotlib
+
+matplotlib.use('TkAgg')  # Use Tkinter backend
+import matplotlib.pyplot as plt
+from scipy import ndimage as ndi
+from skimage.segmentation import watershed
+from skimage.feature import peak_local_max
+from skimage.segmentation import find_boundaries
+import pandas as pd
+
+# Calibration factor (11.2 mm per 98.7 pixels)
+calibration_factor = 11.2 / 98.7
+
+# Read the image
+image = cv2.imread('Image.png')
+
+# Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+# Apply thresholding
+_, binary_image = cv2.threshold(gray, 0, 1, cv2.THRESH_BINARY)
+
+# Watershed segmentation
+distance = ndi.distance_transform_edt(binary_image)
+# Adjust footprint size for peak_local_max for better marker detection
+coords = peak_local_max(distance, footprint=np.ones((20, 20)), labels=binary_image)
+mask = np.zeros(distance.shape, dtype=bool)
+mask[tuple(coords.T)] = True
+markers, _ = ndi.label(mask)
+labels = watershed(-distance, markers, mask=binary_image)
+
+# Remove small objects
+min_size = 70  # Adjust according to your needs
+labels_filtered = np.zeros_like(labels)
+for label in np.unique(labels):
+    if label == 0:
+        continue
+    label_mask = labels == label
+    if np.sum(label_mask) >= min_size:
+        labels_filtered[label_mask] = label
+
+# Initialize a DataFrame to store sorted edge points
+sorted_edges_df = pd.DataFrame({'X (mm)': [], 'Y (mm)': [], 'Label': []})
+
+# Initialize an empty list to store DataFrames for each label
+dfs = []
+
+# Iterate over each label
+for label in np.unique(labels_filtered):
+    if label == 0:
+        continue
+
+    # Get edges of the current label
+    edges = find_boundaries(labels_filtered == label)
+
+    # Get coordinates of label edges
+    edge_coordinates = np.argwhere(edges)
+
+    # Convert pixel coordinates to millimeters
+    edge_coordinates_mm = edge_coordinates * calibration_factor
+
+    # Calculate the centroid of edge points
+    centroid = np.mean(edge_coordinates_mm, axis=0)
+
+    # Calculate polar angles of edge points with respect to the centroid
+    polar_angles = np.arctan2(edge_coordinates_mm[:, 1] - centroid[1], edge_coordinates_mm[:, 0] - centroid[0])
+
+    # Sort the edge coordinates based on polar angles
+    sorted_indices = np.argsort(polar_angles)
+    sorted_edge_coordinates_mm = edge_coordinates_mm[sorted_indices]
+
+    # Create a DataFrame for the sorted edge coordinates
+    df = pd.DataFrame({'X (mm)': sorted_edge_coordinates_mm[:, 1],
+                       'Y (mm)': sorted_edge_coordinates_mm[:, 0],
+                       'Label': label})
+
+    # Append the DataFrame to the list
+    dfs.append(df)
+
+# Concatenate all DataFrames in the list
+sorted_edges_df = pd.concat(dfs, ignore_index=True)
+
+# Save DataFrame to CSV file
+sorted_edges_df.to_csv('sorted2_edge_points.csv', index=False)
+
+# Create subplots
+fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+
+# Plot Grayscale Image
+axes[0, 0].imshow(gray, cmap='gray')
+axes[0, 0].set_title('Grayscale Image')
+axes[0, 0].axis('off')
+
+# Plot Binary Image after Thresholding
+axes[0, 1].imshow(binary_image, cmap='binary')
+axes[0, 1].set_title('Binary Image after Thresholding')
+axes[0, 1].axis('off')
+
+# Plot Original Image
+axes[0, 2].imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+axes[0, 2].set_title('Original Image')
+axes[0, 2].axis('off')
+
+# Plot Segmented Image with Label Numbers
+axes[1, 0].imshow(labels_filtered, cmap=plt.cm.nipy_spectral)
+axes[1, 0].set_title('Segmented Image with Labels')
+for label in np.unique(labels_filtered):
+    if label != 0:
+        y, x = np.where(labels_filtered == label)
+        axes[1, 0].text(np.mean(x), np.mean(y), str(label), color='white', fontsize=12)
+axes[1, 0].axis('off')
+
+
+plt.tight_layout()
+plt.show()
